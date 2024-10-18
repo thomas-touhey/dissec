@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  ...
+pydantic_core._pydantic_core.ValidationError: 3 validation errors for MyModel
+fst
+  Value error, Unable to find any keys or delimiters. [type=value_error, input_value='hello, world', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.9/v/value_error
+snd
+  Value error, Found invalid key/reference associations: my_field. Please ensure each '*<key>' is matched with a matching '&<key>'. [type=value_error, input_value='%{*my_field}', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.9/v/value_error
+thd
+  Value error, At line 1, column 1: key name could not be determined. [type=value_error, input_value='%{+}', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.9/v/value_error
