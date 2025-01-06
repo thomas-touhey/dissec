@@ -1,5 +1,5 @@
-Parsing dissect patterns
-========================
+Parsing and validating dissect patterns
+=======================================
 
 .. py:currentmodule:: dissec.patterns
 

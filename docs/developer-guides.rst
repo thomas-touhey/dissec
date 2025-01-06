@@ -8,4 +8,5 @@ targeted towards developers using the component.
     :maxdepth: 2
 
     developer-guides/parse
+    developer-guides/dissect
     developer-guides/use-in-pydantic-model

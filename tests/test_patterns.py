@@ -30,26 +30,130 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Sequence, Iterable
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 import pytest
 
 from dissec.errors import DecodeError
-from dissec.patterns import Key, KeyModifier, Pattern
+from dissec.patterns import (
+    AppendKey,
+    BasicKey,
+    FieldNameKey,
+    FieldValueKey,
+    Key,
+    Pattern,
+    SkipKey,
+)
 
 
-@pytest.mark.parametrize("raw", ("/", "+"))
-def test_parse_key_with_missing_name(raw: str) -> None:
+@pytest.mark.parametrize(
+    "key,key_repr",
+    (
+        (BasicKey(name="a"), "BasicKey(name='a')"),
+        (
+            BasicKey(name="a", skip_right_padding=True),
+            "BasicKey(name='a', skip_right_padding=True)",
+        ),
+        (SkipKey(), "SkipKey()"),
+        (SkipKey(name=""), "SkipKey()"),
+        (SkipKey(name="a"), "SkipKey(name='a')"),
+        (SkipKey(skip_right_padding=True), "SkipKey(skip_right_padding=True)"),
+        (
+            SkipKey(name="a", skip_right_padding=True),
+            "SkipKey(name='a', skip_right_padding=True)",
+        ),
+        (AppendKey(name="a"), "AppendKey(name='a')"),
+        (
+            AppendKey(name="a", skip_right_padding=True),
+            "AppendKey(name='a', skip_right_padding=True)",
+        ),
+        (
+            AppendKey(name="a", append_order=5),
+            "AppendKey(name='a', append_order=5)",
+        ),
+        (
+            AppendKey(name="a", append_order=5, skip_right_padding=True),
+            "AppendKey(name='a', append_order=5, skip_right_padding=True)",
+        ),
+        (FieldNameKey(name="a"), "FieldNameKey(name='a')"),
+        (
+            FieldNameKey(name="a", skip_right_padding=True),
+            "FieldNameKey(name='a', skip_right_padding=True)",
+        ),
+        (FieldValueKey(name="a"), "FieldValueKey(name='a')"),
+        (
+            FieldValueKey(name="a", skip_right_padding=True),
+            "FieldValueKey(name='a', skip_right_padding=True)",
+        ),
+    ),
+)
+def test_key_repr(key: Key, key_repr: str) -> None:
+    """Test that the key representation function works."""
+    assert repr(key) == key_repr
+
+
+@pytest.mark.parametrize(
+    "key,key_s",
+    (
+        (SkipKey(), "?"),
+        (SkipKey(skip_right_padding=True), "?->"),
+        (SkipKey(name="a"), "?a"),
+        (SkipKey(name="a", skip_right_padding=True), "?a->"),
+        (FieldNameKey(name="a"), "*a"),
+        (FieldNameKey(name="a", skip_right_padding=True), "*a->"),
+        (FieldValueKey(name="a"), "&a"),
+        (FieldValueKey(name="a", skip_right_padding=True), "&a->"),
+    ),
+)
+def test_key_str(key: Key, key_s: str) -> None:
+    """Test that the key string conversion function works."""
+    assert str(key) == key_s
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        BasicKey(name="a"),
+        SkipKey(),
+        FieldNameKey(name="b"),
+        FieldValueKey(name="c"),
+    ),
+)
+def test_key_hash(key: Key) -> None:
+    """Test that key hashing works."""
+    assert hash(key) == id(key)
+
+
+@pytest.mark.parametrize(
+    "key,key_sources",
+    (
+        (BasicKey(name="a"), (BasicKey(name="a"), "a")),
+        (BasicKey(name="a", skip_right_padding=True), ("a->",)),
+        (SkipKey(), ("?", "", SkipKey(name=""))),
+        (AppendKey(name="a"), ("+a", AppendKey(name="a"))),
+        (
+            AppendKey(name="a", append_order=5),
+            ("+a/5", AppendKey(name="a", append_order=5)),
+        ),
+        (FieldNameKey(name="a"), ("*a", FieldNameKey(name="a"))),
+        (FieldValueKey(name="a"), ("&a", FieldValueKey(name="a"))),
+    ),
+)
+def test_validate_key(key: Key, key_sources: Iterable[Any]) -> None:
+    """Test that we can pydantic validate into the right value."""
+    for src in key_sources:
+        assert TypeAdapter(key.__class__).validate_python(src) == key
+        assert TypeAdapter(Key).validate_python(src) == key
+
+
+@pytest.mark.parametrize("raw", ("/", "+", "*", "&", "+?hello"))
+def test_parse_key_with_invalid_format(raw: str) -> None:
     """Check if delimiters which require names fail correctly."""
-    with pytest.raises(DecodeError, match=r"key name could not be det"):
-        Key.parse(raw)
-
-
-def test_parse_key_with_multiple_modifiers() -> None:
-    """Check that parsing a pattern with multiple modifiers."""
-    with pytest.raises(DecodeError, match=r"ultiple modifiers"):
-        Key.parse("+?hello")
+    with pytest.raises(DecodeError, match=r"nvalid key format"):
+        x = Pattern.parse_key(raw)
+        print(repr(x))
 
 
 @pytest.mark.parametrize(
@@ -59,64 +163,29 @@ def test_parse_key_with_multiple_modifiers() -> None:
             "_%{hello}_+%{+no}sfx",
             "_",
             (
-                (Key(name="hello"), "_+"),
-                (
-                    Key(
-                        name="no",
-                        modifier=KeyModifier.APPEND,
-                    ),
-                    "sfx",
-                ),
+                (BasicKey(name="hello"), "_+"),
+                (AppendKey(name="no"), "sfx"),
             ),
         ),
         (
             "%{+a->}",
             "",
-            (
-                (
-                    Key(
-                        name="a",
-                        modifier=KeyModifier.APPEND,
-                        skip_right_padding=True,
-                    ),
-                    "",
-                ),
-            ),
+            ((AppendKey(name="a", skip_right_padding=True), ""),),
         ),
         (
-            "%{+/a/12}%{?a}x",
+            "%{+a/12}%{?a}x",
             "",
             (
-                (
-                    Key(
-                        name="a",
-                        modifier=KeyModifier.APPEND_WITH_ORDER,
-                        append_position=12,
-                    ),
-                    "",
-                ),
-                (
-                    Key(
-                        name="a",
-                        modifier=KeyModifier.NAMED_SKIP,
-                        skip=True,
-                    ),
-                    "x",
-                ),
+                (AppendKey(name="a", append_order=12), ""),
+                (SkipKey(name="a"), "x"),
             ),
         ),
         (
-            ": %{&hello}\n=> %{*hello}",
+            ": %{*hello}\n=> %{&hello}",
             ": ",
             (
-                (
-                    Key(name="hello", modifier=KeyModifier.FIELD_VALUE),
-                    "\n=> ",
-                ),
-                (
-                    Key(name="hello", modifier=KeyModifier.FIELD_NAME),
-                    "",
-                ),
+                (FieldNameKey(name="hello"), "\n=> "),
+                (FieldValueKey(name="hello"), ""),
             ),
         ),
     ),
@@ -132,7 +201,8 @@ def test_parse_pattern(
         pattern: Pattern
 
     pattern = MyModel(pattern=raw).pattern
-    assert (pattern.prefix, tuple(pattern.pairs)) == (prefix, tuple(pairs))
+    assert pattern.prefix == prefix
+    assert tuple(pattern.pairs) == tuple(pairs)
 
 
 @pytest.mark.parametrize(
@@ -199,3 +269,109 @@ def test_parse_pattern_obj() -> None:
 def test_format_pattern(pattern: str) -> None:
     """Check that the pattern works."""
     assert str(Pattern.parse(pattern)) == pattern
+
+
+def test_compare_pattern() -> None:
+    """Check that comparing the pattern works."""
+    p = Pattern.parse("%{?}%{a}")
+    assert p == "%{}%{a}"
+    assert p == "%{?}%{a}"
+    assert p != "%{?/}"
+
+
+@pytest.mark.parametrize(
+    "pattern,raw,expected",
+    (
+        # Examples from:
+        # https://www.elastic.co/guide/en/elasticsearch/reference
+        # /current/dissect-processor.html
+        (
+            '%{clientip} %{ident} %{auth} [%{@timestamp}] "%{verb} '
+            + '%{request} HTTP/%{httpversion}" %{status} %{size}',
+            '1.2.3.4 - - [30/Apr/1998:22:00:52 +0000] "GET '
+            + '/english/venues/cities/images/montpellier/18.gif HTTP/1.0" '
+            + "200 3171",
+            {
+                "request": "/english/venues/cities/images/montpellier/18.gif",
+                "auth": "-",
+                "ident": "-",
+                "verb": "GET",
+                "@timestamp": "30/Apr/1998:22:00:52 +0000",
+                "size": "3171",
+                "clientip": "1.2.3.4",
+                "httpversion": "1.0",
+                "status": "200",
+            },
+        ),
+        (
+            "%{ts->} %{level}",
+            "1998-08-10T17:15:42,466          WARN",
+            {"ts": "1998-08-10T17:15:42,466", "level": "WARN"},
+        ),
+        (
+            "[%{ts}]%{->}[%{level}]",
+            "[1998-08-10T17:15:42,466]            [WARN]",
+            {"ts": "1998-08-10T17:15:42,466", "level": "WARN"},
+        ),
+        (
+            "%{+name} %{+name} %{+name} %{+name}",
+            "john jacob jingleheimer schmidt",
+            {"name": "john jacob jingleheimer schmidt"},
+        ),
+        (
+            "%{+name/2} %{+name/4} %{+name/3} %{+name/1}",
+            "john jacob jingleheimer schmidt",
+            {"name": "schmidt john jingleheimer jacob"},
+        ),
+        (
+            "%{clientip} %{?ident} %{?auth} [%{@timestamp}]",
+            "1.2.3.4 - - [30/Apr/1998:22:00:52 +0000]",
+            {
+                "clientip": "1.2.3.4",
+                "@timestamp": "30/Apr/1998:22:00:52 +0000",
+            },
+        ),
+        (
+            "[%{ts}] [%{level}] %{*p1}:%{&p1} %{*p2}:%{&p2}",
+            "[2018-08-10T17:15:42,466] [ERR] ip:1.2.3.4 error:REFUSED",
+            {
+                "ts": "2018-08-10T17:15:42,466",
+                "level": "ERR",
+                "ip": "1.2.3.4",
+                "error": "REFUSED",
+            },
+        ),
+        # Custom examples for testing specific cases.
+        (
+            # Using both basic and append keys with a same name.
+            "%{+hello/2}-%{+hello/0}-%{hello}",
+            "abc-def-ghi",
+            {"hello": "ghi def abc"},
+        ),
+        (
+            # Using the same name for an append key and field name/value.
+            "%{+hello/2}-%{*hello}-%{&hello}",
+            "abc-def-ghi",
+            {"hello": "abc", "def": "ghi"},
+        ),
+    ),
+)
+def test_dissect(pattern: str, raw: str, expected: dict[str, str]) -> None:
+    """Check that string dissection using pattern works."""
+    assert (
+        Pattern.parse(pattern).dissect(raw, append_separator=" ") == expected
+    )
+
+
+def test_dissect_impossible() -> None:
+    """Check that parsing with the wrong pattern works correctly."""
+    pattern = Pattern.parse("%{hello}-%{world}")
+    with pytest.raises(ValueError, match=r"Cannot dissect"):
+        pattern.dissect("hello, world!")
+
+
+def test_multiple_pattern_compile() -> None:
+    """Test that the regex for a pattern compiles only once."""
+    p = Pattern.parse("%{a}")
+    reg = p.pattern
+    assert reg is p.pattern

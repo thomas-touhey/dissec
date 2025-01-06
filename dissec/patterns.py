@@ -30,13 +30,13 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
-from enum import IntFlag, auto
-from itertools import zip_longest
+from itertools import chain, zip_longest
 import re
-from typing import Any, ClassVar, TypeVar
+from typing import Annotated, Any, ClassVar, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
+from pydantic import GetCoreSchemaHandler, StringConstraints, TypeAdapter
 from pydantic_core.core_schema import (
     CoreSchema,
     ValidationInfo,
@@ -46,160 +46,589 @@ from pydantic_core.core_schema import (
     to_string_ser_schema,
     with_info_after_validator_function,
 )
+from typing_extensions import TypeAlias
 
 from .errors import DecodeError
 from .utils import Runk
 
 
 PatternType = TypeVar("PatternType", bound="Pattern")
-KeyType = TypeVar("KeyType", bound="Key")
-
-_APPEND_WITH_ORDER_PATTERN = re.compile(r"/([0-9]+)$")
-_KEY_DELIMITER_FIELD_PATTERN = re.compile(r"%\{([^}]*)\}")
-
-
-class KeyModifier(IntFlag):
-    """Modifier for dissect pattern keys."""
-
-    NONE = 0
-    APPEND_WITH_ORDER = auto()
-    APPEND = auto()
-    FIELD_NAME = auto()
-    FIELD_VALUE = auto()
-    NAMED_SKIP = auto()
+BasicKeyType = TypeVar("BasicKeyType", bound="BasicKey")
+SkipKeyType = TypeVar("SkipKeyType", bound="SkipKey")
+AppendKeyType = TypeVar("AppendKeyType", bound="AppendKey")
+FieldNameKeyType = TypeVar("FieldNameKeyType", bound="FieldNameKey")
+FieldValueKeyType = TypeVar("FieldValueKeyType", bound="FieldValueKey")
 
 
-class Key(BaseModel):
-    """Key for dissect patterns."""
+class BasicKey:
+    """Basic key for dissect patterns."""
 
-    _DISSECT_KEY_MODIFIERS: ClassVar[dict[str, KeyModifier]] = {
-        "/": KeyModifier.APPEND_WITH_ORDER,
-        "+": KeyModifier.APPEND,
-        "*": KeyModifier.FIELD_NAME,
-        "&": KeyModifier.FIELD_VALUE,
-        "?": KeyModifier.NAMED_SKIP,
-    }
-    """Dissect key modifier values by character."""
+    __slots__ = ("name", "skip_right_padding")
 
-    _DISSECT_KEY_MODIFIER_CHARACTERS: ClassVar[dict[KeyModifier, str]] = {
-        value: key for key, value in _DISSECT_KEY_MODIFIERS.items()
-    }
-    """Dissect key modifier characters by value."""
+    _PATTERN: ClassVar[re.Pattern] = re.compile(r"^([^+*&?/]*?)(->)?$")
+    """Pattern used to parse the key."""
 
-    model_config = ConfigDict(extra="forbid")
-    """Model configuration."""
+    name: Annotated[str, StringConstraints(min_length=1)]
+    """Name of the key."""
 
-    name: str = ""
-    """Name of the dissect key."""
-
-    modifier: KeyModifier = KeyModifier.NONE
-    """Modifier."""
-
-    skip: bool = False
-    """Whether to skip."""
-
-    skip_right_padding: bool = False
+    skip_right_padding: bool
     """Whether to skip right padding."""
 
-    append_position: int = 0
-    """Whether to append the position."""
+    def __init__(
+        self,
+        /,
+        *,
+        name: str,
+        skip_right_padding: Any = False,
+    ) -> None:
+        if not name:
+            raise ValueError("Name cannot be empty.")
+
+        self.name = name
+        self.skip_right_padding = bool(skip_right_padding)
+
+    def __repr__(self, /) -> str:
+        rep = f"{self.__class__.__name__}(name={self.name!r}"
+        if self.skip_right_padding:
+            rep += ", skip_right_padding=True"
+        return rep + ")"
 
     def __str__(self, /) -> str:
-        fmt = "%{"
-        if self.modifier != KeyModifier.NONE:
-            fmt += self._DISSECT_KEY_MODIFIER_CHARACTERS[self.modifier]
+        return self.name + ("->" if self.skip_right_padding else "")
 
-        fmt += self.name
-        if self.skip_right_padding:
-            fmt += "->"
+    def __hash__(self, /) -> int:
+        return hash(id(self))
 
-        return fmt + "}"
+    def __eq__(self, other: Any, /) -> bool:
+        return (
+            isinstance(other, BasicKey)
+            and other.name == self.name
+            and other.skip_right_padding == self.skip_right_padding
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls: type[BasicKeyType],
+        source: type[Any],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        """Get the pydantic core schema.
+
+        This allows the dissect pattern type to be handled
+        within pydantic classes, and imported/exported in JSON schemas.
+        """
+        return with_info_after_validator_function(
+            cls._validate,
+            json_or_python_schema(
+                json_schema=str_schema(),
+                python_schema=is_instance_schema((cls, str)),
+                serialization=to_string_ser_schema(),
+            ),
+        )
+
+    @classmethod
+    def _validate(
+        cls: type[BasicKeyType],
+        value: str | BasicKeyType,
+        info: ValidationInfo,
+        /,
+    ) -> BasicKeyType:
+        """Validate a pydantic value.
+
+        :param value: Value to validate.
+        :param info: Validation information, if required.
+        :return: Obtained pattern.
+        """
+        if isinstance(value, str):
+            return cls.parse(value)
+        elif isinstance(value, cls):
+            return value
+        else:  # pragma: no cover
+            raise NotImplementedError()
 
     @classmethod
     def parse(
-        cls: type[KeyType],
+        cls: type[BasicKeyType],
         raw: str,
         /,
-        *,
-        runk: Runk | None = None,
-    ) -> KeyType:
-        """Parse a key for a dissect pattern.
+    ) -> BasicKeyType:
+        """Parse a basic key.
 
-        :param raw: Raw dissect key.
-        :param runk: Runk instance.
-        :return: Dissect key.
+        :param raw: Textual form of the key to parse.
+        :return: Pattern.
+        :raises ValueError: Could not parse a key.
         """
-        if runk is None:
-            runk = Runk()
-
-        skip = not raw
-        append_position = 0
-
-        # Read the modifiers and remove them from the beginning of the string.
-        # There can be either 0 or 1 operators, or "+/".
-        modifier = KeyModifier.NONE
-        while raw[:1] in cls._DISSECT_KEY_MODIFIERS:
-            prior_modifier = modifier
-            modifier = cls._DISSECT_KEY_MODIFIERS[raw[:1]]
-            raw = raw[1:]
-
-            if prior_modifier == KeyModifier.NONE:
-                continue
-            elif (
-                modifier == KeyModifier.APPEND_WITH_ORDER
-                and prior_modifier == KeyModifier.APPEND
-            ):
-                continue
-
-            raise DecodeError(
-                "Multiple modifiers are not allowed.",
-                line=runk.line,
-                column=runk.column,
-                offset=runk.offset,
-            )
-
-        # All modifiers allow having a "->" at the end to skip right padding.
-        if raw[-2:] == "->":
-            name = raw[:-2]
-            skip_right_padding = True
-        else:
-            name = raw
-            skip_right_padding = False
-
-        if modifier == KeyModifier.NONE:
-            skip = not name
-        elif modifier == KeyModifier.NAMED_SKIP:
-            skip = True
-        elif modifier == KeyModifier.APPEND_WITH_ORDER:
-            while True:
-                match = _APPEND_WITH_ORDER_PATTERN.search(name)
-                if match is None:
-                    break
-
-                append_position = int(match[1])
-                name = name[: match.start()]
-        elif modifier not in (  # pragma: no cover
-            KeyModifier.APPEND,
-            KeyModifier.FIELD_NAME,
-            KeyModifier.FIELD_VALUE,
-        ):
-            raise NotImplementedError()
-
-        if not name and not skip:
-            raise DecodeError(
-                "Key name could not be determined.",
-                line=runk.line,
-                column=runk.column,
-                offset=runk.offset,
-            )
+        match = cls._PATTERN.match(raw)
+        if match is None:
+            raise ValueError("Invalid format.")
 
         return cls(
-            name=name,
-            modifier=modifier,
-            skip=skip,
-            skip_right_padding=skip_right_padding,
-            append_position=append_position,
+            name=match[1],
+            skip_right_padding=match[2],
         )
+
+
+class SkipKey:
+    """Skip key for dissect patterns."""
+
+    __slots__ = ("name", "skip_right_padding")
+
+    _PATTERN: ClassVar[re.Pattern] = re.compile(r"^(?:|\?([^+*&?/]*?))(->)?$")
+    """Pattern used to parse the key."""
+
+    name: str
+    """Optional name of the skip key."""
+
+    skip_right_padding: bool
+    """Whether to skip right padding."""
+
+    def __init__(
+        self,
+        /,
+        *,
+        name: str = "",
+        skip_right_padding: Any = False,
+    ) -> None:
+        self.name = name
+        self.skip_right_padding = bool(skip_right_padding)
+
+    def __repr__(self, /) -> str:
+        rep = f"{self.__class__.__name__}("
+        sep = ""
+        if self.name != "":
+            rep += f"name={self.name!r}"
+            sep = ", "
+        if self.skip_right_padding:
+            rep += f"{sep}skip_right_padding=True"
+        return rep + ")"
+
+    def __str__(self, /) -> str:
+        return "?" + self.name + ("->" if self.skip_right_padding else "")
+
+    def __hash__(self, /) -> int:
+        return hash(id(self))
+
+    def __eq__(self, other: Any, /) -> bool:
+        return (
+            isinstance(other, SkipKey)
+            and other.name == self.name
+            and other.skip_right_padding == self.skip_right_padding
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls: type[SkipKeyType],
+        source: type[Any],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        """Get the pydantic core schema.
+
+        This allows the dissect pattern type to be handled
+        within pydantic classes, and imported/exported in JSON schemas.
+        """
+        return with_info_after_validator_function(
+            cls._validate,
+            json_or_python_schema(
+                json_schema=str_schema(),
+                python_schema=is_instance_schema((cls, str)),
+                serialization=to_string_ser_schema(),
+            ),
+        )
+
+    @classmethod
+    def _validate(
+        cls: type[SkipKeyType],
+        value: str | SkipKeyType,
+        info: ValidationInfo,
+        /,
+    ) -> SkipKeyType:
+        """Validate a pydantic value.
+
+        :param value: Value to validate.
+        :param info: Validation information, if required.
+        :return: Obtained pattern.
+        """
+        if isinstance(value, str):
+            return cls.parse(value)
+        elif isinstance(value, cls):
+            return value
+        else:  # pragma: no cover
+            raise NotImplementedError()
+
+    @classmethod
+    def parse(
+        cls: type[SkipKeyType],
+        raw: str,
+        /,
+    ) -> SkipKeyType:
+        """Parse a skip key.
+
+        :param raw: Textual form of the key to parse.
+        :return: Pattern.
+        :raises ValueError: Could not parse a key.
+        """
+        match = cls._PATTERN.match(raw)
+        if match is None:
+            raise ValueError("Invalid format.")
+
+        return cls(
+            name=match[1] or "",
+            skip_right_padding=match[2],
+        )
+
+
+class AppendKey:
+    """Append key for dissect patterns."""
+
+    __slots__ = ("name", "append_order", "skip_right_padding")
+
+    _PATTERN: ClassVar[re.Pattern] = re.compile(
+        r"^\+([^+*&?/]*?)(?:/([0-9]+))?(->)?$",
+    )
+    """Pattern used to parse the key."""
+
+    name: Annotated[str, StringConstraints(min_length=1)]
+    """Optional name of the skip key."""
+
+    append_order: int | None
+    """The position at which to append the key."""
+
+    skip_right_padding: bool
+    """Whether to skip right padding."""
+
+    def __init__(
+        self,
+        /,
+        *,
+        name: str,
+        append_order: int | None = None,
+        skip_right_padding: Any = False,
+    ) -> None:
+        if not name:
+            raise ValueError("Name cannot be empty.")
+
+        self.name = name
+        self.append_order = append_order
+        self.skip_right_padding = bool(skip_right_padding)
+
+    def __repr__(self, /) -> str:
+        rep = f"{self.__class__.__name__}(name={self.name!r}"
+        if self.append_order is not None:
+            rep += f", append_order={self.append_order!r}"
+        if self.skip_right_padding:
+            rep += ", skip_right_padding=True"
+        return rep + ")"
+
+    def __str__(self, /) -> str:
+        return (
+            "+"
+            + self.name
+            + (
+                f"/{self.append_order}"
+                if self.append_order is not None
+                else ""
+            )
+            + ("->" if self.skip_right_padding else "")
+        )
+
+    def __hash__(self, /) -> int:
+        return hash(id(self))
+
+    def __eq__(self, other: Any, /) -> bool:
+        return (
+            isinstance(other, AppendKey)
+            and other.name == self.name
+            and other.append_order == self.append_order
+            and other.skip_right_padding == self.skip_right_padding
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls: type[AppendKeyType],
+        source: type[Any],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        """Get the pydantic core schema.
+
+        This allows the dissect pattern type to be handled
+        within pydantic classes, and imported/exported in JSON schemas.
+        """
+        return with_info_after_validator_function(
+            cls._validate,
+            json_or_python_schema(
+                json_schema=str_schema(),
+                python_schema=is_instance_schema((cls, str)),
+                serialization=to_string_ser_schema(),
+            ),
+        )
+
+    @classmethod
+    def _validate(
+        cls: type[AppendKeyType],
+        value: str | AppendKeyType,
+        info: ValidationInfo,
+        /,
+    ) -> AppendKeyType:
+        """Validate a pydantic value.
+
+        :param value: Value to validate.
+        :param info: Validation information, if required.
+        :return: Obtained pattern.
+        """
+        if isinstance(value, str):
+            return cls.parse(value)
+        elif isinstance(value, cls):
+            return value
+        else:  # pragma: no cover
+            raise NotImplementedError()
+
+    @classmethod
+    def parse(
+        cls: type[AppendKeyType],
+        raw: str,
+        /,
+    ) -> AppendKeyType:
+        """Parse a skip key.
+
+        :param raw: Textual form of the key to parse.
+        :return: Pattern.
+        :raises ValueError: Could not parse a key.
+        """
+        match = cls._PATTERN.match(raw)
+        if match is None:
+            raise ValueError("Invalid format.")
+
+        return cls(
+            name=match[1],
+            append_order=int(match[2]) if match[2] is not None else None,
+            skip_right_padding=match[3],
+        )
+
+
+class FieldNameKey:
+    """Field name key for dissect patterns."""
+
+    __slots__ = ("name", "skip_right_padding")
+
+    _PATTERN: ClassVar[re.Pattern] = re.compile(r"^\*([^+*&?/]*?)(->)?$")
+    """Pattern used to parse the key."""
+
+    name: Annotated[str, StringConstraints(min_length=1)]
+    """Optional name of the skip key."""
+
+    skip_right_padding: bool
+    """Whether to skip right padding."""
+
+    def __init__(
+        self,
+        /,
+        *,
+        name: str,
+        skip_right_padding: Any = False,
+    ) -> None:
+        if not name:
+            raise ValueError("Name cannot be empty.")
+
+        self.name = name
+        self.skip_right_padding = bool(skip_right_padding)
+
+    def __repr__(self, /) -> str:
+        rep = f"{self.__class__.__name__}(name={self.name!r}"
+        if self.skip_right_padding:
+            rep += ", skip_right_padding=True"
+        return rep + ")"
+
+    def __str__(self, /) -> str:
+        return "*" + self.name + ("->" if self.skip_right_padding else "")
+
+    def __hash__(self, /) -> int:
+        return hash(id(self))
+
+    def __eq__(self, other: Any, /) -> bool:
+        return (
+            isinstance(other, FieldNameKey)
+            and other.name == self.name
+            and other.skip_right_padding == self.skip_right_padding
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls: type[FieldNameKeyType],
+        source: type[Any],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        """Get the pydantic core schema.
+
+        This allows the dissect pattern type to be handled
+        within pydantic classes, and imported/exported in JSON schemas.
+        """
+        return with_info_after_validator_function(
+            cls._validate,
+            json_or_python_schema(
+                json_schema=str_schema(),
+                python_schema=is_instance_schema((cls, str)),
+                serialization=to_string_ser_schema(),
+            ),
+        )
+
+    @classmethod
+    def _validate(
+        cls: type[FieldNameKeyType],
+        value: str | FieldNameKeyType,
+        info: ValidationInfo,
+        /,
+    ) -> FieldNameKeyType:
+        """Validate a pydantic value.
+
+        :param value: Value to validate.
+        :param info: Validation information, if required.
+        :return: Obtained pattern.
+        """
+        if isinstance(value, str):
+            return cls.parse(value)
+        elif isinstance(value, cls):
+            return value
+        else:  # pragma: no cover
+            raise NotImplementedError()
+
+    @classmethod
+    def parse(
+        cls: type[FieldNameKeyType],
+        raw: str,
+        /,
+    ) -> FieldNameKeyType:
+        """Parse a skip key.
+
+        :param raw: Textual form of the key to parse.
+        :return: Pattern.
+        :raises ValueError: Could not parse a key.
+        """
+        match = cls._PATTERN.match(raw)
+        if match is None:
+            raise ValueError("Invalid format.")
+
+        return cls(
+            name=match[1],
+            skip_right_padding=match[2],
+        )
+
+
+class FieldValueKey:
+    """Field value key for dissect patterns."""
+
+    __slots__ = ("name", "skip_right_padding")
+
+    _PATTERN: ClassVar[re.Pattern] = re.compile(r"^&([^+*&?/]*?)(->)?$")
+    """Pattern used to parse the key."""
+
+    name: Annotated[str, StringConstraints(min_length=1)]
+    """Optional name of the skip key."""
+
+    skip_right_padding: bool
+    """Whether to skip right padding."""
+
+    def __init__(
+        self,
+        /,
+        *,
+        name: str,
+        skip_right_padding: Any = False,
+    ) -> None:
+        if not name:
+            raise ValueError("Name cannot be empty.")
+
+        self.name = name
+        self.skip_right_padding = bool(skip_right_padding)
+
+    def __repr__(self, /) -> str:
+        rep = f"{self.__class__.__name__}(name={self.name!r}"
+        if self.skip_right_padding:
+            rep += ", skip_right_padding=True"
+        return rep + ")"
+
+    def __str__(self, /) -> str:
+        return "&" + self.name + ("->" if self.skip_right_padding else "")
+
+    def __hash__(self, /) -> int:
+        return hash(id(self))
+
+    def __eq__(self, other: Any, /) -> bool:
+        return (
+            isinstance(other, FieldValueKey)
+            and other.name == self.name
+            and other.skip_right_padding == self.skip_right_padding
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls: type[FieldValueKeyType],
+        source: type[Any],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        """Get the pydantic core schema.
+
+        This allows the dissect pattern type to be handled
+        within pydantic classes, and imported/exported in JSON schemas.
+        """
+        return with_info_after_validator_function(
+            cls._validate,
+            json_or_python_schema(
+                json_schema=str_schema(),
+                python_schema=is_instance_schema((cls, str)),
+                serialization=to_string_ser_schema(),
+            ),
+        )
+
+    @classmethod
+    def _validate(
+        cls: type[FieldValueKeyType],
+        value: str | FieldValueKeyType,
+        info: ValidationInfo,
+        /,
+    ) -> FieldValueKeyType:
+        """Validate a pydantic value.
+
+        :param value: Value to validate.
+        :param info: Validation information, if required.
+        :return: Obtained pattern.
+        """
+        if isinstance(value, str):
+            return cls.parse(value)
+        elif isinstance(value, cls):
+            return value
+        else:  # pragma: no cover
+            raise NotImplementedError()
+
+    @classmethod
+    def parse(
+        cls: type[FieldValueKeyType],
+        raw: str,
+        /,
+    ) -> FieldValueKeyType:
+        """Parse a skip key.
+
+        :param raw: Textual form of the key to parse.
+        :return: Pattern.
+        :raises ValueError: Could not parse a key.
+        """
+        match = cls._PATTERN.match(raw)
+        if match is None:
+            raise ValueError("Invalid format.")
+
+        return cls(
+            name=match[1],
+            skip_right_padding=match[2],
+        )
+
+
+Key: TypeAlias = Union[
+    BasicKey,
+    SkipKey,
+    AppendKey,
+    FieldNameKey,
+    FieldValueKey,
+]
+"""Key type for dissect patterns."""
 
 
 class Pattern:
@@ -208,13 +637,44 @@ class Pattern:
     For more information, see :ref:`dissect-patterns`.
     """
 
-    __slots__ = ("_prefix", "_pairs")
+    __slots__ = (
+        "_append_indexes",
+        "_append_lengths",
+        "_prefix",
+        "_pairs",
+        "_pattern",
+    )
+
+    _KEY_DELIMITER_FIELD_PATTERN: ClassVar[re.Pattern] = re.compile(
+        r"%\{([^}]*?)\}",
+    )
+    """Pattern used to find keys in a pattern."""
+
+    _KEY_TYPE_ADAPTER: ClassVar[TypeAdapter[Key]] = TypeAdapter(Key)
+    """Type adapter for decoding a key."""
+
+    _append_indexes: dict[Key, int]
+    """Indexes for keys to add to arrays to concatenate at dissection end.
+
+    This can include both append keys and basic keys sharing the name of
+    at least one append key. It is guaranteed to be unique and correctly
+    ordered depending on the key name.
+
+    If a key is defined here, it must be processed as an array value rather
+    than a basic "replacing" value.
+    """
+
+    _append_lengths: dict[str, int]
+    """Length of arrays obtained from append keys."""
 
     _prefix: str
     """Prefix."""
 
     _pairs: tuple[tuple[Key, str], ...]
     """Parsing pairs in order, using."""
+
+    _pattern: re.Pattern | None
+    """Compiled pattern to use for extraction."""
 
     def __init__(
         self,
@@ -224,20 +684,16 @@ class Pattern:
         pairs: Sequence[tuple[Key, str]] = (),
     ) -> None:
         # Check that at least one key is defined.
-        if all(not key.name or key.skip for key, _ in pairs):
+        if all(not key.name or isinstance(key, SkipKey) for key, _ in pairs):
             raise ValueError("Unable to find any keys or delimiters.")
 
         # Check that there is exactly one field name for every field value,
         # and exactly one field value for every field name.
         field_names = [
-            key.name
-            for key, _ in pairs
-            if key.modifier == KeyModifier.FIELD_NAME
+            key.name for key, _ in pairs if isinstance(key, FieldNameKey)
         ]
         field_values = [
-            key.name
-            for key, _ in pairs
-            if key.modifier == KeyModifier.FIELD_VALUE
+            key.name for key, _ in pairs if isinstance(key, FieldValueKey)
         ]
         invalid_keys = [
             key
@@ -252,21 +708,106 @@ class Pattern:
                 + "matching '&<key>'.",
             )
 
+        # Determine the append keys, and orders in such keys.
+        # NOTE: that as long as a key name has at least one append key attached
+        # to it, basic keys with the same key name will actually also be
+        # append keys, so we actually base ourselves on the names for both
+        # append and basic keys.
+        # NOTE: The order is just a general idea of the order, and is not
+        # unique. Basic keys or append keys with no explicit order are
+        # considered to have order -1 (which cannot be specified using the
+        # append with order specifier).
+        append_key_names: set[str] = {
+            key.name for key, _ in pairs if isinstance(key, AppendKey)
+        }
+        append_keys: defaultdict[
+            str,
+            defaultdict[int, list[Key]],
+        ] = defaultdict(lambda: defaultdict(list))
+        append_indexes: dict[Key, int] = {}
+        append_lengths: dict[str, int] = {}
+
+        for key, _ in pairs:
+            if key.name not in append_key_names:
+                continue
+            elif isinstance(key, AppendKey):
+                append_order = key.append_order
+            elif isinstance(key, BasicKey):
+                append_order = None
+            else:  # pragma: no cover
+                continue
+
+            append_keys[key.name][
+                append_order if append_order is not None else -1
+            ].append(key)
+
+        for key_name, keys_grouped_by_order in append_keys.items():
+            last_index = 0
+            for index, key in enumerate(
+                chain(
+                    *(
+                        values
+                        for _, values in sorted(keys_grouped_by_order.items())
+                    ),
+                ),
+            ):
+                append_indexes[key] = index
+                last_index = index
+
+            append_lengths[key_name] = last_index + 1
+
+        self._append_indexes = append_indexes
+        self._append_lengths = append_lengths
         self._prefix = prefix
         self._pairs = tuple(pairs)
+        self._pattern = None
 
     def __str__(self, /) -> str:
         return self._prefix + "".join(
-            f"{key}{sep}" for key, sep in self._pairs
+            f"%{{{key}}}{sep}" for key, sep in self._pairs
         )
 
     def __eq__(self, other: Any, /) -> bool:
         if isinstance(other, str):
-            return str(self) == other
-        if not isinstance(other, Pattern):
+            try:
+                pattern = self.parse(other)
+            except ValueError:
+                return False
+        elif isinstance(other, Pattern):
+            pattern = other
+        else:
             return False
 
-        return self._prefix == other._prefix and self._pairs == other._pairs
+        return (
+            self._prefix == pattern._prefix and self._pairs == pattern._pairs
+        )
+
+    @classmethod
+    def parse_key(
+        cls: type[PatternType],
+        raw: str,
+        /,
+        *,
+        runk: Runk | None = None,
+    ) -> Key:
+        """Parse a key for a dissect pattern.
+
+        :param raw: Raw dissect key.
+        :param runk: Runk instance.
+        :return: Dissect key.
+        """
+        if runk is None:
+            runk = Runk()
+
+        try:
+            return cls._KEY_TYPE_ADAPTER.validate_python(raw)
+        except ValueError as exc:
+            raise DecodeError(
+                "Invalid key format.",
+                line=runk.line,
+                column=runk.column,
+                offset=runk.offset,
+            ) from exc
 
     @classmethod
     def parse(
@@ -286,7 +827,7 @@ class Pattern:
             runk = Runk()
 
         matches: list[re.Match] = list(
-            _KEY_DELIMITER_FIELD_PATTERN.finditer(raw),
+            cls._KEY_DELIMITER_FIELD_PATTERN.finditer(raw),
         )
         if not matches:
             prefix: str = raw
@@ -300,7 +841,7 @@ class Pattern:
                 if fst is None:  # pragma: no cover
                     continue
 
-                key = Key.parse(fst[1], runk=runk)
+                key = cls.parse_key(fst[1], runk=runk)
                 if snd is not None:
                     delim = raw[fst.end() : snd.start()]
                     runk.count(raw[fst.start() : snd.start()])
@@ -361,3 +902,85 @@ class Pattern:
     def pairs(self, /) -> Sequence[tuple[Key, str]]:
         """Key / delimiter pairs to use to parse the string."""
         return self._pairs
+
+    @property
+    def pattern(self, /) -> re.Pattern:
+        """Pattern."""
+        if self._pattern is not None:
+            return self._pattern
+
+        pattern = re.compile(
+            r"^"
+            + re.escape(self._prefix)
+            + r"".join(
+                r"(.*?)"
+                + (
+                    rf"(?:{re.escape(delim)})+"
+                    if key.skip_right_padding
+                    else re.escape(delim)
+                )
+                for key, delim in self._pairs
+            )
+            + r"$",
+        )
+
+        self._pattern = pattern
+        return pattern
+
+    def dissect(
+        self,
+        raw: str,
+        /,
+        *,
+        append_separator: str = "",
+    ) -> dict[str, str]:
+        """Use the pattern to dissect a string.
+
+        :param raw: Raw string to dissect.
+        :param append_separator: Separator to use with append fields.
+        :return: Extracted data.
+        :raises ValueError: Raw string dissection was not possible.
+        """
+        match = self.pattern.fullmatch(raw)
+        if match is None:
+            raise ValueError("Cannot dissect the provided string.")
+
+        result: dict[str, str] = {}
+        arrays: dict[str, list[str]] = {
+            key: ["" for _ in range(length)]
+            for key, length in self._append_lengths.items()
+        }
+        field_names: dict[str, str] = {}
+        field_values: dict[str, str] = {}
+
+        for (key, _), group in zip(self._pairs, match.groups()):
+            if isinstance(key, SkipKey):
+                continue
+            elif isinstance(key, FieldNameKey):
+                field_names[key.name] = group
+            elif isinstance(key, FieldValueKey):
+                field_values[key.name] = group
+            else:
+                try:
+                    index = self._append_indexes[key]
+                except KeyError:
+                    result[key.name] = group
+                else:
+                    arrays[key.name][index] = group
+
+        result.update(
+            {
+                key: append_separator.join(values)
+                for key, values in arrays.items()
+            },
+        )
+        result.update(
+            {
+                key[1]: value[1]
+                for key, value in zip(
+                    sorted(field_names.items()),
+                    sorted(field_values.items()),
+                )
+            },
+        )
+        return result
