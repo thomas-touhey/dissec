@@ -30,10 +30,10 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import chain, zip_longest
-import re
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import TypeAdapter
@@ -48,7 +48,6 @@ from .keys import (
     SkipKey,
 )
 from .utils import Parseable, Runk
-
 
 __all__ = ["Pattern"]
 
@@ -65,9 +64,9 @@ class Pattern(Parseable):
     __slots__ = (
         "_append_indexes",
         "_append_lengths",
-        "_prefix",
         "_pairs",
         "_pattern",
+        "_prefix",
     )
 
     _KEY_DELIMITER_FIELD_PATTERN: ClassVar[re.Pattern] = re.compile(

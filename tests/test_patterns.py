@@ -32,8 +32,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import BaseModel
 import pytest
+from pydantic import BaseModel
 
 from dissec.patterns import (
     AppendKey,

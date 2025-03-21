@@ -33,8 +33,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from pydantic import TypeAdapter
 import pytest
+from pydantic import TypeAdapter
 
 from dissec.errors import DecodeError
 from dissec.keys import (

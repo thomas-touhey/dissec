@@ -38,7 +38,6 @@ from typing_extensions import TypeAlias
 
 from .utils import Parseable
 
-
 __all__ = [
     "AppendKey",
     "BasicKey",
@@ -196,7 +195,7 @@ class SkipKey(Parseable):
 class AppendKey(Parseable):
     """Append key for dissect patterns."""
 
-    __slots__ = ("name", "append_order", "skip_right_padding")
+    __slots__ = ("append_order", "name", "skip_right_padding")
 
     _PATTERN: ClassVar[re.Pattern] = re.compile(
         r"^\+([^+*&?/]*?)(?:/([0-9]+))?(->)?$",

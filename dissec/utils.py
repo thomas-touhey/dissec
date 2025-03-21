@@ -44,7 +44,6 @@ from pydantic_core.core_schema import (
     with_info_after_validator_function,
 )
 
-
 ParseableT = TypeVar("ParseableT", bound="Parseable")
 
 

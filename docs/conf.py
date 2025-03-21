@@ -6,11 +6,10 @@ https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from toml import load as load_toml
-
 
 # Add the module path.
 sys.path.insert(0, str(Path(__file__).parent.parent))
