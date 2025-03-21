@@ -30,7 +30,76 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from abc import ABC, abstractmethod
+from typing import Any, TypeVar
+
+from pydantic import BaseModel, GetCoreSchemaHandler
+from pydantic_core.core_schema import (
+    CoreSchema,
+    ValidationInfo,
+    is_instance_schema,
+    json_or_python_schema,
+    str_schema,
+    to_string_ser_schema,
+    with_info_after_validator_function,
+)
+
+
+ParseableT = TypeVar("ParseableT", bound="Parseable")
+
+
+class Parseable(ABC):
+    """Class with a string representation, which can be parsed."""
+
+    @classmethod
+    @abstractmethod
+    def parse(
+        cls: type[ParseableT],
+        raw: str,
+        /,
+    ) -> ParseableT:
+        """Parse the string representation into an object."""
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls: type[ParseableT],
+        _source: type[Any],
+        _handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        """Get the pydantic core schema.
+
+        This allows the dissect pattern type to be handled
+        within pydantic classes, and imported/exported in JSON schemas.
+        """
+        return with_info_after_validator_function(
+            cls._validate,
+            json_or_python_schema(
+                json_schema=str_schema(),
+                python_schema=is_instance_schema((cls, str)),
+                serialization=to_string_ser_schema(),
+            ),
+        )
+
+    @classmethod
+    def _validate(
+        cls: type[ParseableT],
+        value: str | ParseableT,
+        _info: ValidationInfo,
+        /,
+    ) -> ParseableT:
+        """Validate a pydantic value.
+
+        :param value: Value to validate.
+        :param info: Validation information, if required.
+        :return: Obtained pattern.
+        """
+        if isinstance(value, str):
+            return cls.parse(value)
+
+        if isinstance(value, cls):
+            return value
+
+        raise NotImplementedError()  # pragma: no cover
 
 
 class Runk(BaseModel):

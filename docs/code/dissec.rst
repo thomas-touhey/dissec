@@ -7,5 +7,6 @@ This section presents the code reference under the ``dissec`` namespace.
     :maxdepth: 1
 
     dissec/errors
+    dissec/keys
     dissec/patterns
     dissec/utils

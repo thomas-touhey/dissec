@@ -30,13 +30,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence, Iterable
-from typing import Any
+from collections.abc import Sequence
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 import pytest
 
-from dissec.errors import DecodeError
 from dissec.patterns import (
     AppendKey,
     BasicKey,
@@ -46,114 +44,6 @@ from dissec.patterns import (
     Pattern,
     SkipKey,
 )
-
-
-@pytest.mark.parametrize(
-    "key,key_repr",
-    (
-        (BasicKey(name="a"), "BasicKey(name='a')"),
-        (
-            BasicKey(name="a", skip_right_padding=True),
-            "BasicKey(name='a', skip_right_padding=True)",
-        ),
-        (SkipKey(), "SkipKey()"),
-        (SkipKey(name=""), "SkipKey()"),
-        (SkipKey(name="a"), "SkipKey(name='a')"),
-        (SkipKey(skip_right_padding=True), "SkipKey(skip_right_padding=True)"),
-        (
-            SkipKey(name="a", skip_right_padding=True),
-            "SkipKey(name='a', skip_right_padding=True)",
-        ),
-        (AppendKey(name="a"), "AppendKey(name='a')"),
-        (
-            AppendKey(name="a", skip_right_padding=True),
-            "AppendKey(name='a', skip_right_padding=True)",
-        ),
-        (
-            AppendKey(name="a", append_order=5),
-            "AppendKey(name='a', append_order=5)",
-        ),
-        (
-            AppendKey(name="a", append_order=5, skip_right_padding=True),
-            "AppendKey(name='a', append_order=5, skip_right_padding=True)",
-        ),
-        (FieldNameKey(name="a"), "FieldNameKey(name='a')"),
-        (
-            FieldNameKey(name="a", skip_right_padding=True),
-            "FieldNameKey(name='a', skip_right_padding=True)",
-        ),
-        (FieldValueKey(name="a"), "FieldValueKey(name='a')"),
-        (
-            FieldValueKey(name="a", skip_right_padding=True),
-            "FieldValueKey(name='a', skip_right_padding=True)",
-        ),
-    ),
-)
-def test_key_repr(key: Key, key_repr: str) -> None:
-    """Test that the key representation function works."""
-    assert repr(key) == key_repr
-
-
-@pytest.mark.parametrize(
-    "key,key_s",
-    (
-        (SkipKey(), "?"),
-        (SkipKey(skip_right_padding=True), "?->"),
-        (SkipKey(name="a"), "?a"),
-        (SkipKey(name="a", skip_right_padding=True), "?a->"),
-        (FieldNameKey(name="a"), "*a"),
-        (FieldNameKey(name="a", skip_right_padding=True), "*a->"),
-        (FieldValueKey(name="a"), "&a"),
-        (FieldValueKey(name="a", skip_right_padding=True), "&a->"),
-    ),
-)
-def test_key_str(key: Key, key_s: str) -> None:
-    """Test that the key string conversion function works."""
-    assert str(key) == key_s
-
-
-@pytest.mark.parametrize(
-    "key",
-    (
-        BasicKey(name="a"),
-        SkipKey(),
-        FieldNameKey(name="b"),
-        FieldValueKey(name="c"),
-    ),
-)
-def test_key_hash(key: Key) -> None:
-    """Test that key hashing works."""
-    assert hash(key) == id(key)
-
-
-@pytest.mark.parametrize(
-    "key,key_sources",
-    (
-        (BasicKey(name="a"), (BasicKey(name="a"), "a")),
-        (BasicKey(name="a", skip_right_padding=True), ("a->",)),
-        (SkipKey(), ("?", "", SkipKey(name=""))),
-        (AppendKey(name="a"), ("+a", AppendKey(name="a"))),
-        (
-            AppendKey(name="a", append_order=5),
-            ("+a/5", AppendKey(name="a", append_order=5)),
-        ),
-        (FieldNameKey(name="a"), ("*a", FieldNameKey(name="a"))),
-        (FieldValueKey(name="a"), ("&a", FieldValueKey(name="a"))),
-    ),
-)
-def test_validate_key(key: Key, key_sources: Iterable[Any]) -> None:
-    """Test that we can pydantic validate into the right value."""
-    for src in key_sources:
-        assert TypeAdapter(key.__class__).validate_python(src) == key
-        assert TypeAdapter(Key).validate_python(src) == key
-
-
-@pytest.mark.parametrize("raw", ("/", "+", "*", "&", "+?hello"))
-def test_parse_key_with_invalid_format(raw: str) -> None:
-    """Check if delimiters which require names fail correctly."""
-    with pytest.raises(DecodeError, match=r"nvalid key format"):
-        x = Pattern.parse_key(raw)
-        print(repr(x))
 
 
 @pytest.mark.parametrize(

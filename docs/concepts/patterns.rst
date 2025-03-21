@@ -18,6 +18,8 @@ Patterns are implemented using the :py:class:`Pattern` class.
 Keys and delimiters
 -------------------
 
+.. py:currentmodule:: dissec.keys
+
 Dissect patterns are composed of keys, delimited using ``%{...}``, with
 separators between keys in order for the dissection to know when a string
 matched by a key stops and another starts. A basic example is the following
@@ -149,9 +151,13 @@ Since, for the ``hello`` key:
 * Then, all matched strings of order 2 are added in order of appearence
   in the pattern/string, here ``b`` then ``e``.
 
+.. py:currentmodule:: dissec.patterns
+
 By default, when concatenated, the separator is an empty string. However, it
 is possible to set one by using the ``append_separator`` keyword parameter
 to :py:meth:`Pattern.dissect`.
+
+.. py:currentmodule:: dissec.keys
 
 Append keys are represented using :py:class:`AppendKey`.
 
