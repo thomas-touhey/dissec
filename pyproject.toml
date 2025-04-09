@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "dissec"
-version = "1.0"
+version = "1.1"
 description = "Dissect pattern implementation for ElasticSearch"
 readme = "README.rst"
 requires-python = ">=3.9,<4.0"
