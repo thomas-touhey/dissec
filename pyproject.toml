@@ -1,15 +1,16 @@
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry]
+[project]
 name = "dissec"
 version = "1.0"
 description = "Dissect pattern implementation for ElasticSearch"
 readme = "README.rst"
-homepage = "https://dissec.touhey.pro/"
-repository = "https://gitlab.com/kaquel/dissec"
-authors = ["Thomas Touhey <thomas@touhey.fr>"]
+requires-python = ">=3.9,<4.0"
+authors = [
+    { name = "Thomas Touhey", email = "thomas@touhey.fr" },
+]
 keywords = [
     "elasticsearch",
     "dissect",
@@ -17,7 +18,7 @@ keywords = [
     "parsing",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
     "License :: CeCILL-C Free Software License Agreement (CECILL-C)",
@@ -27,12 +28,17 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed",
 ]
+dependencies = [
+    "eval-type-backport>=0.2,<0.3; python_version < '3.10'",
+    "pydantic>=2.7.1,<3",
+    "typing-extensions>=4.12.2,<5",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-eval-type-backport = { version = "^0.2", markers = "python_version < '3.10'" }
-pydantic = "^2.7.1"
-typing-extensions = "^4.12.2"
+[project.urls]
+homepage = "https://dissec.touhey.pro/"
+"Documentation" = "https://dissec.touhey.pro/"
+"Source Code" = "https://gitlab.com/kaquel/dissec"
+"Bug Tracker" = "https://gitlab.com/kaquel/dissec/-/issues"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7.0"
