@@ -7,6 +7,6 @@ targeted towards developers using the component.
 .. toctree::
     :maxdepth: 2
 
-    developer-guides/parse
-    developer-guides/dissect
-    developer-guides/use-in-pydantic-model
+    developer/parse
+    developer/dissect
+    developer/use-in-pydantic-model

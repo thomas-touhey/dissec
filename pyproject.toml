@@ -108,8 +108,8 @@ known-first-party = ["dissec"]
 required-imports = ["from __future__ import annotations"]
 
 [tool.ruff.lint.per-file-ignores]
+"docs/**.py" = ["ANN201", "D100", "D102"]
 "tests/**.py" = ["D103", "S101", "S106"]
-"docs/**.py" = ["D100"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"

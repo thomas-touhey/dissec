@@ -32,8 +32,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import docutils.nodes as nodes
+from sphinx import addnodes
+from sphinx.writers.html import HTMLTranslator
+
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
+
+
+class MyHTMLTranslator(HTMLTranslator):
+    """Custom HTML translator."""
+
+    def visit_title(self, node: nodes.Node):
+        # Remove captions in toctrees, only keep them for side navigation.
+        if (
+            isinstance(node.parent, addnodes.compact_paragraph)
+            and node.parent.get("toctree")
+            and isinstance(node.parent.parent, nodes.compound)
+            and "toctree-wrapper" in node.parent.parent.get("classes", ())
+        ):
+            raise nodes.SkipNode()
+
+        super().visit_title(node)
 
 
 def remove_first_line_in_module_docstring(
@@ -69,6 +89,7 @@ def setup(app: Sphinx) -> None:
 
     :param app: The Sphinx application to set up the extension for.
     """
+    app.set_translator("html", MyHTMLTranslator)
     app.connect(
         "autodoc-process-docstring",
         remove_first_line_in_module_docstring,

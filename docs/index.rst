@@ -23,10 +23,11 @@ They guide you through the steps involved in addressing key problems
 and use-cases.
 
 .. toctree::
+    :caption: How-to guides
     :maxdepth: 3
 
-    guides
-    developer-guides
+    guides/general
+    guides/developer
 
 Discussion topics
 -----------------
@@ -35,9 +36,10 @@ These sections discuss key topics and concepts at a fairly high level,
 and provide useful background information and explanation.
 
 .. toctree::
+    :caption: Discussion topics
     :maxdepth: 3
 
-    concepts
+    topics/concepts
 
 References
 ----------
@@ -47,9 +49,10 @@ dissec's machinery. They go into detail, and therefore, assume you have a
 basic understanding of key concepts.
 
 .. toctree::
+    :caption: References
     :maxdepth: 3
 
-    code
+    references/code
 
 .. _Gitlab repository: https://gitlab.com/kaquel/dissec
 .. _PyPI project: https://pypi.org/project/dissec/
